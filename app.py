@@ -1,89 +1,109 @@
-"""Powership efficiency dashboard (Streamlit)."""
+"""Karpowership fleet dashboard.
+
+Run with:  streamlit run app.py
+
+How the page is built:
+  1. Sidebar: choose the data and the scenario
+  2. Load or simulate the records
+  3. Add the daily metrics and find downtime and efficiency alerts
+  4. Draw the five tabs
+"""
+from datetime import date
+
+import pandas as pd
 import streamlit as st
 
-from src.calculations import add_record_metrics, summarize
-from src.data import load_data
+from src import analytics, views
+from src.calculations import add_daily_metrics
+from src.data import MAINTENANCE, ORIGINAL_FILE, OUTAGE, load_file, one_row_per_day, prepare
+from src.fleet import ALL_SHIPS
+from src.simulation import DEFAULT_EVENT, Event, generate_fleet
 
-st.set_page_config(page_title="Powership Efficiency", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="Karpowership Fleet Dashboard", page_icon="⚡", layout="wide")
+
+if "added_records" not in st.session_state:
+    st.session_state.added_records = []  # records typed in on the Data tab
 
 
 @st.cache_data
-def get_data():
-    return load_data()
+def load_original() -> pd.DataFrame:
+    return load_file(ORIGINAL_FILE)
 
 
-df, n_removed = get_data()
+@st.cache_data
+def simulate(end: date, ship: str, kind: str, start: date, days: int, new_ships: bool, seed: int) -> pd.DataFrame:
+    events = [] if ship == "None" else [Event(ship, start, days, kind=kind,
+                                              cause=DEFAULT_EVENT.cause if kind == OUTAGE else "Dry-docking")]
+    return generate_fleet(load_original(), end, events, new_ships=new_ships, seed=seed)
 
-st.title("⚡ Powership Efficiency Calculator")
-st.caption("Select a ship and a date to see fuel efficiency and operating margin.")
 
-# ---------- Sidebar: inputs ----------
-with st.sidebar:
-    st.header("Selection")
-    ship = st.selectbox("Ship", sorted(df["ship_name"].unique()))
-    ship_df = df[df["ship_name"] == ship]
-    date = st.date_input(
-        "Date",
-        value=ship_df["date"].min(),
-        min_value=ship_df["date"].min(),
-        max_value=ship_df["date"].max(),
-    )
+# ---------------------------------------------------------------- 1. Sidebar
+st.sidebar.title("⚡ Karpowership")
+source = st.sidebar.radio("Data", ["Simulated fleet", "Original Excel only"])
 
-    st.header("Price assumptions")
-    fuel_price = st.number_input("Fuel price (USD/ton)", min_value=1.0, value=450.0, step=10.0)
-    elec_price = st.number_input("Electricity price (USD/MWh)", min_value=0.0, value=100.0, step=5.0)
-    st.caption("Placeholders. Replace with real prices.")
+if source == "Simulated fleet":
+    st.sidebar.subheader("Downtime scenario")
+    ship = st.sidebar.selectbox("Ship", ["None"] + list(ALL_SHIPS), index=3)  # default: Rauf Bey
+    kind = st.sidebar.radio("Type", [OUTAGE, MAINTENANCE], format_func=str.capitalize, horizontal=True)
+    start = st.sidebar.date_input("Start", value=DEFAULT_EVENT.start)
+    days = st.sidebar.slider("Days", 1, 120, DEFAULT_EVENT.days)
 
-# ---------- Results ----------
-day_df = ship_df[ship_df["date"] == date]
-period = summarize(ship_df, fuel_price, elec_price)
+    st.sidebar.subheader("Simulation")
+    new_ships = st.sidebar.checkbox("Include the 4 new ships", value=True)
+    end = st.sidebar.date_input("Simulate until", value=date(2024, 12, 31), min_value=date(2024, 4, 30))
+    seed = st.sidebar.number_input("Random seed", value=42, help="Change it to get different random data.")
+    records = simulate(end, ship, kind, start, days, new_ships, seed)
+else:
+    records = load_original()
 
-st.subheader(f"{ship} on {date:%d %b %Y}")
+if st.session_state.added_records:
+    records = prepare(pd.concat([records, pd.DataFrame(st.session_state.added_records)]))
 
-if day_df.empty:
-    st.warning("No valid record for this ship on this date (missing or removed). Pick another date.")
+st.sidebar.subheader("Filters")
+all_ships = sorted(records["ship_name"].unique())
+ships = st.sidebar.multiselect("Ships", all_ships, default=all_ships)
+first_day, last_day = records["date"].min().date(), records["date"].max().date()
+date_range = st.sidebar.date_input("Dates", value=(first_day, last_day), min_value=first_day, max_value=last_day)
+period = st.sidebar.radio("Group by", ["W", "M"], format_func={"W": "Week", "M": "Month"}.get, horizontal=True)
+
+st.sidebar.subheader("Prices (placeholders)")
+fuel_price = st.sidebar.number_input("Fuel (USD per tonne)", value=450.0, step=10.0)
+electricity_price = st.sidebar.number_input("Electricity (USD per MWh)", value=100.0, step=5.0)
+
+# ---------------------------------------------------------------- 2-3. Prepare the data
+daily = add_daily_metrics(one_row_per_day(records), fuel_price, electricity_price)
+daily = daily[daily["ship_name"].isin(ships)]
+
+# Alerts need the days before the selected range, so they use all dates.
+events = analytics.downtime_events(daily, electricity_price)
+check = analytics.efficiency_check(daily)
+alerts = analytics.efficiency_alerts(check, events)
+
+if len(date_range) == 2:
+    from_day, to_day = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
+    daily = daily[daily["date"].between(from_day, to_day)]
+    events = events[(events["end"] >= from_day) & (events["start"] <= to_day)]
+    alerts = alerts[(alerts["to"] >= from_day) & (alerts["from"] <= to_day)]
+    check = check[check["date"].between(from_day, to_day)]
+
+if daily.empty:
+    st.warning("No data for this selection.")
     st.stop()
 
-day = summarize(day_df, fuel_price, elec_price)
+# ---------------------------------------------------------------- 4. Tabs
+st.title("Fleet operations dashboard")
+st.caption(f"{source} · {daily['ship_name'].nunique()} ships · "
+           f"{daily['date'].min():%d %b %Y} – {daily['date'].max():%d %b %Y}")
 
-c1, c2, c3 = st.columns(3)
-c1.metric(
-    "Efficiency (MWh/ton)",
-    f"{day['mwh_per_ton']:.2f}",
-    delta=f"{day['mwh_per_ton'] - period['mwh_per_ton']:+.2f} vs period avg",
-)
-c2.metric("Electricity produced", f"{day['mwh']:,.1f} MWh")
-c3.metric("Fuel used", f"{day['fuel_t']:,.1f} t")
-
-c4, c5, c6 = st.columns(3)
-c4.metric("Revenue", f"${day['revenue']:,.0f}")
-c5.metric("Fuel cost", f"${day['fuel_cost']:,.0f}")
-c6.metric("Profit", f"${day['profit']:,.0f}", delta=f"{day['margin']:.1%} margin")
-
-st.write(f"**Break-even electricity price:** ${day['breakeven']:,.0f}/MWh")
-
-if len(day_df) > 1:
-    st.info(
-        f"This ship has {len(day_df)} records on this date. "
-        "The figures above combine them; the individual records are shown below."
-    )
-    st.dataframe(
-        add_record_metrics(day_df, fuel_price, elec_price)[
-            ["production_mwh", "fuel_consumption_ton", "mwh_per_ton", "profit"]
-        ].round(2),
-        hide_index=True,
-    )
-
-# ---------- Context ----------
-st.divider()
-st.subheader(f"{ship}: full period")
-trend = ship_df.groupby("date", as_index=False).agg(
-    production_mwh=("production_mwh", "sum"),
-    fuel_consumption_ton=("fuel_consumption_ton", "sum"),
-)
-trend["MWh per ton"] = trend["production_mwh"] / trend["fuel_consumption_ton"]
-st.line_chart(trend.set_index("date")["MWh per ton"])
-st.caption(
-    f"Period average: {period['mwh_per_ton']:.2f} MWh/ton | total profit: ${period['profit']:,.0f} "
-    f"| {n_removed} rows with missing values were excluded."
-)
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Fleet overview", "Compare ships", "Ship details",
+                                        "Downtime & alerts", "Data"])
+with tab1:
+    views.fleet_overview(daily, events, alerts, period)
+with tab2:
+    views.compare_ships(daily, period)
+with tab3:
+    views.ship_details(daily, records, events, check, fuel_price)
+with tab4:
+    views.downtime_and_alerts(daily, records, events, alerts, fuel_price)
+with tab5:
+    views.data_tab(records)
