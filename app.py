@@ -18,11 +18,13 @@ from src.simulation import LAST_DAY, SIMULATION_START, build_dataset
 
 st.set_page_config(page_title="Karpowership Fleet Dashboard", layout="wide")
 
-# Hide the top-right toolbar (share, menu, record, print, theme settings) and
-# the download / fullscreen buttons that appear on charts and tables.
+# Hide the buttons in the top-right corner (share, menu with record / print /
+# theme settings) and the download / fullscreen buttons on charts and tables.
+# The top bar itself stays, because it holds the button that re-opens the sidebar.
 st.markdown("""
 <style>
-[data-testid="stToolbar"], [data-testid="stDecoration"], #MainMenu, footer { display: none !important; }
+[data-testid="stToolbarActions"], [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
+[data-testid="stDecoration"], #MainMenu, footer { display: none !important; }
 [data-testid="stElementToolbar"], .vega-embed details { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -36,6 +38,12 @@ if "show_data" not in st.session_state:
 @st.cache_data
 def load_data() -> pd.DataFrame:
     return build_dataset()
+
+
+@st.cache_data
+def daily_table(records: pd.DataFrame, fuel_price: float, electricity_price: float) -> pd.DataFrame:
+    """One row per ship per day, with all the metrics (kept in memory between clicks)."""
+    return add_daily_metrics(one_row_per_day(records), fuel_price, electricity_price)
 
 
 # ---------------------------------------------------------------- 1. Data
@@ -67,13 +75,14 @@ if not ships or len(date_range) != 2:
     st.stop()
 
 # ---------------------------------------------------------------- 3. Prepare the data
-daily = add_daily_metrics(one_row_per_day(records), fuel_price, electricity_price)
-daily = daily[daily["ship_name"].isin(ships)]
+with st.spinner("Loading the selected data..."):
+    daily = daily_table(records, fuel_price, electricity_price)
+    daily = daily[daily["ship_name"].isin(ships)]
 
-# Alerts need the days before the selected range, so they use all dates.
-events = analytics.downtime_events(daily, electricity_price)
-check = analytics.efficiency_check(daily)
-alerts = analytics.efficiency_alerts(check, events)
+    # Alerts need the days before the selected range, so they use all dates.
+    events = analytics.downtime_events(daily, electricity_price)
+    check = analytics.efficiency_check(daily)
+    alerts = analytics.efficiency_alerts(check, events)
 
 from_day, to_day = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
 daily = daily[daily["date"].between(from_day, to_day)]
