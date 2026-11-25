@@ -27,20 +27,18 @@ def show_kpis(summary: dict) -> None:
 
 # ---------------------------------------------------------------- Tab 1
 def fleet_overview(df: pd.DataFrame, events: pd.DataFrame, alerts: pd.DataFrame, period: str) -> None:
-    # Red boxes for long downtimes, with the early warning if there was one.
+    # A plain box for each long downtime, with the early warning if there was one.
     for _, e in events[events["days"] >= 14].iterrows():
         text = (f"**{e['ship_name']} – {e['type']}** from {e['start']:%d %b} to {e['end']:%d %b %Y} "
                 f"({e['days']} days): {e['cause']}. About **{e['lost_mwh']:,.0f} MWh** not produced "
-                f"(≈ ${e['lost_revenue']:,.0f}).")
+                f"(about ${e['lost_revenue']:,.0f} of revenue).")
         warning = alerts[(alerts["ship_name"] == e["ship_name"]) & (alerts["followed_by"] != "")]
         if not warning.empty:
             w = warning.iloc[0]
             text += (f" Efficiency started dropping on {w['from']:%d %b} "
                      f"({w['warning_days_before']} days before), worst {w['worst_drop']:.1%}.")
-        if e["type"] == "Outage":
-            st.error(text)
-        else:
-            st.warning(text)
+        with st.container(border=True):
+            st.markdown(text)
 
     show_kpis(summarize(df))
 
@@ -58,7 +56,7 @@ def fleet_overview(df: pd.DataFrame, events: pd.DataFrame, alerts: pd.DataFrame,
     with right:
         st.subheader("Fleet availability")
         st.altair_chart(charts.line_with_downtime(fleet, "availability", "Availability", events, percent=True))
-    st.caption("Shaded: red = outage, blue = maintenance. One ship's outage mostly shows up in availability; "
+    st.caption("Shaded: red = outage, blue = maintenance, orange = idle. One ship's downtime mostly shows up in availability; "
                "fleet efficiency only moves a little because the other ships keep running normally.")
 
     st.subheader("Status of each ship, day by day")
@@ -115,7 +113,7 @@ def ship_details(df: pd.DataFrame, records: pd.DataFrame, events: pd.DataFrame, 
     st.subheader("Efficiency compared with normal")
     st.altair_chart(charts.efficiency_chart(check[check["ship_name"] == ship], ship_events))
     st.caption("Grey dots: daily efficiency. Blue line: last 7 days. Dashed line: normal level "
-               f"(median of the previous 60 days). ▼ = more than {analytics.DROP_THRESHOLD:.0%} below normal.")
+               f"(median of the previous 60 days). Red triangles: more than {analytics.DROP_THRESHOLD:.0%} below normal.")
 
     st.subheader("Downtime")
     if ship_events.empty:
@@ -175,7 +173,7 @@ def data_tab(records: pd.DataFrame) -> None:
         day = st.date_input("Date", value=records["date"].max())
         mwh = st.number_input("Production (MWh)", min_value=0.0, value=350.0)
         fuel = st.number_input("Fuel (t)", min_value=0.0, value=70.0)
-        status = st.selectbox("Status", [OPERATING, "ramp_up", "maintenance", "outage"])
+        status = st.selectbox("Status", [OPERATING, "ramp_up", "maintenance", "outage", "idle"])
         note = st.text_input("Note")
         if st.form_submit_button("Add"):
             st.session_state.added_records.append({

@@ -4,7 +4,7 @@ Required columns (the original file):
     ship_name, date, production_mwh, fuel_consumption_ton
 
 Optional columns (added by the simulator, filled in when missing):
-    status      operating / ramp_up / maintenance / outage / no_data
+    status      operating / ramp_up / maintenance / outage / idle / no_data
     event_note  short explanation, e.g. "Outage: crankshaft failure (day 3/45)"
     source      original / simulated / manual
 """
@@ -25,9 +25,10 @@ OPERATING = "operating"
 RAMP_UP = "ramp_up"  # restarting after downtime, or newly commissioned
 MAINTENANCE = "maintenance"  # planned downtime
 OUTAGE = "outage"  # unplanned downtime (breakdown)
+IDLE = "idle"  # ship works but cannot deliver power (e.g. no grid connection)
 NO_DATA = "no_data"  # the daily report is missing
 
-DOWN_STATUSES = [MAINTENANCE, OUTAGE]
+DOWN_STATUSES = [MAINTENANCE, OUTAGE, IDLE]
 
 
 def prepare(df: pd.DataFrame, source: str = "original") -> pd.DataFrame:
@@ -74,7 +75,7 @@ def one_row_per_day(records: pd.DataFrame) -> pd.DataFrame:
     the day counts as down.
     """
     def pick_status(statuses):
-        for status in [OUTAGE, MAINTENANCE, RAMP_UP, OPERATING]:
+        for status in [OUTAGE, IDLE, MAINTENANCE, RAMP_UP, OPERATING]:
             if status in statuses.values:
                 return status
         return NO_DATA

@@ -2,8 +2,8 @@
 
 A Streamlit prototype to monitor a fleet of powerships (floating power plants):
 how much energy they produce, how much fuel they burn, how efficient they are,
-and when and why they are down. It includes a simple simulator to create more
-mock data, for example a ship that breaks down for 45 days.
+and when and why they are down. The data covers **1 January 2024 to
+30 November 2026**: the real records plus simulated (mock) data.
 
 ## Run it
 
@@ -22,7 +22,7 @@ Each row is one ship on one day:
 | `ship_name`, `date` | which ship, which day |
 | `production_mwh` | electricity produced |
 | `fuel_consumption_ton` | fuel burned (HFO) |
-| `status` | `operating`, `ramp_up`, `maintenance`, `outage` or `no_data` (optional) |
+| `status` | `operating`, `ramp_up`, `maintenance`, `outage`, `idle` or `no_data` (optional) |
 | `event_note` | short explanation, e.g. *Outage: crankshaft failure (day 3/45)* (optional) |
 | `source` | `original`, `simulated` or `manual` (optional) |
 
@@ -30,8 +30,13 @@ The first four columns come from the original file `data/powership_veri.xlsx`
 (3 ships, January–March 2024). The other columns are optional: if they are
 missing, the app fills them in.
 
-`data/powership_sim.xlsx` is the simulated dataset. It keeps the original rows,
-continues all ships to the end of 2024, and adds 4 fictional ships.
+`data/powership_sim.xlsx` is the full dashboard dataset (`build_dataset` in
+`src/simulation.py`):
+
+| Period | Where it comes from |
+|---|---|
+| 2024 | The original records (Jan–Mar) and the 2024 simulation (Apr–Dec), with 4 fictional ships added |
+| 2025 – Nov 2026 | `generate_2025_2026`: every ship continues with its 2024 behaviour |
 
 Ship information (capacity, site, design efficiency) is in `src/fleet.py`.
 The capacities are assumptions.
@@ -76,15 +81,19 @@ Events change the normal days:
 - **Routine maintenance:** 5 days, roughly every 150 days.
 - **Missing reports:** about 3 % of days have no data.
 
-**Default scenario:** Rauf Bey breaks down from 1 July to 14 August 2024
-(45 days). The sidebar lets you pick another ship, type, start date or length.
+Two scenarios are built into the data:
+
+| Ship | Dates | What happens |
+|---|---|---|
+| Rauf Bey | 1 Jul – 14 Aug 2024 (45 days) | Breakdown (`outage`): 0 MWh, 2–4 t/day standby fuel, efficiency drops in the 3 weeks before |
+| Nilüfer Sultan | 29 Jan – 17 Mar 2026 (48 days) | Waiting idle offshore (`idle`): exactly 0 MWh, only 0.5–1.0 t/day of fuel for heating and maintenance on board |
 
 Create a dataset from the command line:
 
 ```bash
-python scripts/generate_mock_data.py                                    # default
-python scripts/generate_mock_data.py --outage "Kaya Bey" 2024-09-02 30  # other breakdown
-python scripts/generate_mock_data.py --base data/powership_sim.xlsx --end 2025-03-31 --no-outage
+python scripts/generate_mock_data.py                                    # dashboard data, 2024 - Nov 2026
+python scripts/generate_mock_data.py --only-2024                        # 2024 only
+python scripts/generate_mock_data.py --outage "Kaya Bey" 2024-09-02 30  # other breakdown in 2024
 ```
 
 ## Alerts (`src/analytics.py`)
@@ -99,6 +108,13 @@ python scripts/generate_mock_data.py --base data/powership_sim.xlsx --end 2025-0
 - **Data checks:** missing values, duplicate records, days above maximum output.
 
 ## The dashboard
+
+Choose the ships, dates, grouping (week or month) and prices in the sidebar,
+then click **Show selected data**. Nothing is shown before the first click, and
+changes are only applied when the button is clicked again.
+
+The theme is light and minimal (`.streamlit/config.toml`). The top-right
+toolbar and the download / fullscreen buttons on charts and tables are hidden.
 
 | Tab | Shows |
 |---|---|

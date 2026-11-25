@@ -1,0 +1,16 @@
+# Minimal light theme: white backgrounds, thin grey borders, no dark mode.
+[theme]
+base = "light"
+primaryColor = "#1f3b57"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1a1a1a"
+borderColor = "#d9d9d9"
+showWidgetBorder = true
+
+[theme.sidebar]
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#ffffff"
+
+[client]
+toolbarMode = "minimal"

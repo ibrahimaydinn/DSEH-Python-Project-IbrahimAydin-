@@ -98,3 +98,30 @@ def test_early_warning_before_outage(daily):
 def test_data_checks_find_duplicates(simulated, daily):
     checks = analytics.data_checks(simulated, daily).set_index("check")["count"]
     assert checks["Ship-days with more than one record"] == 21
+
+
+# ---------------------------------------------------------------- 2024 - 2026 dataset
+@pytest.fixture(scope="module")
+def full():
+    from src.simulation import build_dataset
+    return build_dataset()
+
+
+def test_dataset_covers_2024_to_november_2026(full):
+    assert full["date"].min() == pd.Timestamp("2024-01-01")
+    assert full["date"].max() == pd.Timestamp("2026-11-30")
+
+
+def test_2024_is_unchanged(full, simulated):
+    data_2024 = full[full["date"] <= "2024-12-31"].reset_index(drop=True)
+    pd.testing.assert_frame_equal(data_2024, simulated.reset_index(drop=True))
+
+
+def test_nilufer_sultan_idle_in_2026(full):
+    ship = full[full["ship_name"] == "Nilüfer Sultan"].set_index("date")
+    idle = ship.loc["2026-01-29":"2026-03-17"]
+    assert len(idle) == 48
+    assert (idle["status"] == "idle").all()
+    assert (idle["production_mwh"] == 0).all()
+    assert idle["fuel_consumption_ton"].between(0.5, 1.0).all()  # only heating and maintenance on board
+    assert ship.loc["2026-01-28", "production_mwh"] > 0 and ship.loc["2026-03-18", "production_mwh"] > 0

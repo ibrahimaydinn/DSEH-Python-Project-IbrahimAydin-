@@ -10,13 +10,14 @@ STATUS_COLORS = {
     "ramp_up": "#8cb8f0",
     "maintenance": "#2f6fce",
     "outage": "#d93b3b",
+    "idle": "#e8a33d",
     "no_data": "#f0f0f0",
 }
-EVENT_COLORS = alt.Scale(domain=["Outage", "Maintenance"], range=["#d93b3b", "#2f6fce"])
+EVENT_COLORS = alt.Scale(domain=["Outage", "Maintenance", "Idle"], range=["#d93b3b", "#2f6fce", "#e8a33d"])
 
 
 def downtime_bands(events: pd.DataFrame) -> alt.Chart:
-    """Shaded rectangles: red = outage, blue = maintenance."""
+    """Shaded rectangles: red = outage, blue = maintenance, orange = idle."""
     events = events.assign(end_next_day=events["end"] + pd.Timedelta(days=1))
     return alt.Chart(events).mark_rect(opacity=0.15).encode(
         x="start:T",
