@@ -1,194 +1,109 @@
-"""Karowership fleet operations & optimisation dashboard (Streamlit).
+"""Karowership fleet dashboard.
 
 Run with:  streamlit run app.py
-"""
-from __future__ import annotations
 
+How the page is built:
+  1. Sidebar: choose the data and the scenario
+  2. Load or simulate the records
+  3. Add the daily metrics and find downtime and efficiency alerts
+  4. Draw the five tabs
+"""
 from datetime import date
 
 import pandas as pd
 import streamlit as st
 
-from src import analytics as A
-from src.calculations import Prices, enrich
-from src.data import DATA_PATH, Dataset, daily_by_ship, normalize, read_records
-from src.fleet import EXTRA_SHIPS, FUELS, FuelType, ShipSpec, ship_order
-from src.schema import STATUS_LABELS, Status
-from src.simulation import DEFAULT_PRESET, PRESETS, DowntimeScenario, SimulationConfig, generate_fleet
-from src.ui import charts as C
-from src.ui import views as V
+from src import analytics, views
+from src.calculations import add_daily_metrics
+from src.data import MAINTENANCE, ORIGINAL_FILE, OUTAGE, load_file, one_row_per_day, prepare
+from src.fleet import ALL_SHIPS
+from src.simulation import DEFAULT_EVENT, Event, generate_fleet
 
-st.set_page_config(page_title="Karowership Fleet Ops", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Karowership Fleet Dashboard", page_icon="⚡", layout="wide")
 
-SOURCES = ["Scenario simulator", "Original Excel", "Upload file"]
-CUSTOM = "Custom scenario…"
-FREQS = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
+if "added_records" not in st.session_state:
+    st.session_state.added_records = []  # records typed in on the Data tab
 
 
-# ------------------------------------------------------------------ data
-@st.cache_data(show_spinner=False)
-def load_original() -> Dataset:
-    return read_records(DATA_PATH)
+@st.cache_data
+def load_original() -> pd.DataFrame:
+    return load_file(ORIGINAL_FILE)
 
 
-@st.cache_data(show_spinner="Simulating fleet…")
-def simulate(config: SimulationConfig, continue_original: bool):
-    base = load_original() if continue_original else None
-    return generate_fleet(config, base=base)
+@st.cache_data
+def simulate(end: date, ship: str, kind: str, start: date, days: int, new_ships: bool, seed: int) -> pd.DataFrame:
+    events = [] if ship == "None" else [Event(ship, start, days, kind=kind,
+                                              cause=DEFAULT_EVENT.cause if kind == OUTAGE else "Dry-docking")]
+    return generate_fleet(load_original(), end, events, new_ships=new_ships, seed=seed)
 
 
-@st.cache_data(show_spinner=False)
-def load_upload(content: bytes, name: str) -> Dataset:
-    from io import BytesIO
-    buf = BytesIO(content)
-    buf.name = name
-    return read_records(buf, source="upload")
-
-
-def scenario_sidebar() -> tuple[SimulationConfig, bool]:
-    with st.sidebar.expander("Scenario", expanded=True):
-        preset = st.selectbox("Downtime scenario", list(PRESETS) + [CUSTOM], index=0)
-        all_ships = ["Doğan Bey", "Kaya Bey", "Rauf Bey"] + [s.name for s in EXTRA_SHIPS]
-        if preset == CUSTOM:
-            ship = st.selectbox("Ship", all_ships, index=2)
-            kind = st.selectbox("Event type", [Status.FORCED_OUTAGE, Status.PLANNED_MAINTENANCE, Status.DRY_DOCK],
-                                format_func=lambda s: STATUS_LABELS[s])
-            start = st.date_input("Start", value=date(2024, 7, 1), min_value=date(2024, 1, 1))
-            days = st.slider("Duration (days)", 3, 120, 45)
-            degr = 0
-            if kind == Status.FORCED_OUTAGE:
-                degr = st.slider("Degradation before failure (days)", 0, 45, 21)
-            cause = st.text_input("Cause", value="")
-            events = (DowntimeScenario(ship=ship, start=start, duration_days=days, kind=kind,
-                                       cause=cause, degradation_days=degr),)
-        else:
-            events = PRESETS[preset]
-        st.caption(" · ".join(f"{e.ship}: {STATUS_LABELS[e.kind].lower()} from {e.start:%d %b}, {e.duration_days} d"
-                              for e in events) or "No major event.")
-
-    with st.sidebar.expander("Fleet & horizon"):
-        continue_original = st.checkbox("Start from original Excel records", value=True,
-                                        help="Keep the recorded Jan–Mar 2024 data and simulate onward.")
-        extra = st.multiselect("Additional ships", [s.name for s in EXTRA_SHIPS],
-                               default=[s.name for s in EXTRA_SHIPS])
-        end = st.date_input("Simulate until", value=date(2024, 12, 31),
-                            min_value=date(2024, 4, 30), max_value=date(2027, 12, 31))
-        demand = st.slider("Demand scale", 0.7, 1.2, 1.0, 0.05, help="Fleet-wide demand multiplier.")
-        a, b = st.columns(2)
-        routine = a.checkbox("Routine maint.", value=True)
-        trips = b.checkbox("Unit trips", value=True)
-        missing = a.checkbox("Missing reports", value=True)
-        seed = b.number_input("Seed", value=42, step=1)
-    ships = tuple(["Doğan Bey", "Kaya Bey", "Rauf Bey"] + extra)
-    config = SimulationConfig(
-        start=date(2024, 1, 1), end=end, seed=int(seed), ships=ships, events=tuple(events),
-        routine_maintenance=routine, trips=trips, missing_data=missing, demand_scale=demand,
-    )
-    return config, continue_original
-
-
-def add_manual_record(row: dict, capacity: float, fuel_type: str) -> None:
-    st.session_state.setdefault("manual_records", []).append(row)
-    st.session_state.setdefault("manual_specs", {})[row["ship_name"]] = ShipSpec(
-        row["ship_name"], capacity, FuelType(fuel_type))
-
-
-# ------------------------------------------------------------------ sidebar
+# ---------------------------------------------------------------- 1. Sidebar
 st.sidebar.title("⚡ Karowership")
-source = st.sidebar.radio("Data source", SOURCES, index=0)
-profiles = None
-warnings: list[str] = []
-if source == "Scenario simulator":
-    config, cont = scenario_sidebar()
-    result = simulate(config, cont)
-    dataset, profiles, warnings = result.dataset, result.profiles, result.warnings
-elif source == "Original Excel":
-    dataset = load_original()
+source = st.sidebar.radio("Data", ["Simulated fleet", "Original Excel only"])
+
+if source == "Simulated fleet":
+    st.sidebar.subheader("Downtime scenario")
+    ship = st.sidebar.selectbox("Ship", ["None"] + list(ALL_SHIPS), index=3)  # default: Rauf Bey
+    kind = st.sidebar.radio("Type", [OUTAGE, MAINTENANCE], format_func=str.capitalize, horizontal=True)
+    start = st.sidebar.date_input("Start", value=DEFAULT_EVENT.start)
+    days = st.sidebar.slider("Days", 1, 120, DEFAULT_EVENT.days)
+
+    st.sidebar.subheader("Simulation")
+    new_ships = st.sidebar.checkbox("Include the 4 new ships", value=True)
+    end = st.sidebar.date_input("Simulate until", value=date(2024, 12, 31), min_value=date(2024, 4, 30))
+    seed = st.sidebar.number_input("Random seed", value=42, help="Change it to get different random data.")
+    records = simulate(end, ship, kind, start, days, new_ships, seed)
 else:
-    up = st.sidebar.file_uploader("Excel or CSV with ship_name, date, production_mwh, fuel_consumption_ton",
-                                  type=["xlsx", "csv"])
-    if up is None:
-        st.info("Upload a file in the sidebar to continue.")
-        st.stop()
-    try:
-        dataset = load_upload(up.getvalue(), up.name)
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
+    records = load_original()
 
-# Session-added records.
-manual = st.session_state.get("manual_records", [])
-if manual:
-    registry = {**dataset.registry}
-    for name, spec in st.session_state.get("manual_specs", {}).items():
-        registry.setdefault(name, spec)
-    records = normalize(pd.concat([dataset.records, pd.DataFrame(manual)], ignore_index=True))
-    dataset = Dataset(records, registry)
-    if st.sidebar.button(f"Clear {len(manual)} added record(s)"):
-        st.session_state["manual_records"] = []
-        st.rerun()
+if st.session_state.added_records:
+    records = prepare(pd.concat([records, pd.DataFrame(st.session_state.added_records)]))
 
-daily_all = daily_by_ship(dataset.records)
-order = ship_order(dataset.registry)
+st.sidebar.subheader("Filters")
+all_ships = sorted(records["ship_name"].unique())
+ships = st.sidebar.multiselect("Ships", all_ships, default=all_ships)
+first_day, last_day = records["date"].min().date(), records["date"].max().date()
+date_range = st.sidebar.date_input("Dates", value=(first_day, last_day), min_value=first_day, max_value=last_day)
+period = st.sidebar.radio("Group by", ["W", "M"], format_func={"W": "Week", "M": "Month"}.get, horizontal=True)
 
-st.sidebar.header("Filters")
-ships = st.sidebar.multiselect("Ships", order, default=order)
-dmin, dmax = daily_all["date"].min().date(), daily_all["date"].max().date()
-rng = st.sidebar.date_input("Date range", value=(dmin, dmax), min_value=dmin, max_value=dmax)
-start, end = (rng if isinstance(rng, tuple) and len(rng) == 2 else (dmin, dmax))
-freq_label = st.sidebar.radio("Granularity", list(FREQS), index=1, horizontal=True)
+st.sidebar.subheader("Prices (placeholders)")
+fuel_price = st.sidebar.number_input("Fuel (USD per tonne)", value=450.0, step=10.0)
+electricity_price = st.sidebar.number_input("Electricity (USD per MWh)", value=100.0, step=5.0)
 
-with st.sidebar.expander("Prices (placeholders)"):
-    elec = st.number_input("Electricity (USD/MWh)", min_value=0.0, value=100.0, step=5.0)
-    fuel_prices = {f: st.number_input(f"{f} (USD/t)", min_value=1.0, value=p.default_price_usd_t, step=10.0)
-                   for f, p in FUELS.items()}
-prices = Prices(elec, fuel_prices)
+# ---------------------------------------------------------------- 2-3. Prepare the data
+daily = add_daily_metrics(one_row_per_day(records), fuel_price, electricity_price)
+daily = daily[daily["ship_name"].isin(ships)]
 
-with st.sidebar.expander("Anomaly detection"):
-    settings = A.AnomalySettings(
-        drift_threshold=st.slider("Drift threshold", 0.02, 0.10, 0.04, 0.01, format="%.2f"),
-        baseline_days=st.slider("Baseline window (days)", 30, 120, 60, 10),
-        low_load=st.slider("Low-load flag below", 0.1, 0.5, 0.3, 0.05),
-    )
+# Alerts need the days before the selected range, so they use all dates.
+events = analytics.downtime_events(daily, electricity_price)
+check = analytics.efficiency_check(daily)
+alerts = analytics.efficiency_alerts(check, events)
 
-# ------------------------------------------------------------------ prepare
-enriched_all = enrich(daily_all, dataset.registry, prices)
-in_ships = enriched_all[enriched_all["ship_name"].isin(ships)]
-# Anomaly baselines need history before the window: compute on all dates.
-anomalies = A.detect_anomalies(in_ships, settings)
-baseline = A.efficiency_baseline(in_ships, settings)
-events = A.downtime_events(enriched_all, prices)
-mask = (in_ships["date"] >= pd.Timestamp(start)) & (in_ships["date"] <= pd.Timestamp(end))
+if len(date_range) == 2:
+    from_day, to_day = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
+    daily = daily[daily["date"].between(from_day, to_day)]
+    events = events[(events["end"] >= from_day) & (events["start"] <= to_day)]
+    alerts = alerts[(alerts["to"] >= from_day) & (alerts["from"] <= to_day)]
+    check = check[check["date"].between(from_day, to_day)]
 
-try:
-    mode = st.context.theme.type or "light"
-except Exception:  # older Streamlit
-    mode = "light"
+if daily.empty:
+    st.warning("No data for this selection.")
+    st.stop()
 
-ctx = V.ViewContext(
-    dataset=dataset, enriched=in_ships[mask], enriched_all=enriched_all, events=events,
-    anomalies=anomalies, baseline=baseline, prices=prices, theme=C.Theme(mode, order),
-    freq=FREQS[freq_label], freq_label=freq_label, start=start, end=end, settings=settings,
-    profiles=profiles,
-)
+# ---------------------------------------------------------------- 4. Tabs
+st.title("Fleet operations dashboard")
+st.caption(f"{source} · {daily['ship_name'].nunique()} ships · "
+           f"{daily['date'].min():%d %b %Y} – {daily['date'].max():%d %b %Y}")
 
-# ------------------------------------------------------------------ page
-st.title("Fleet operations & optimisation")
-st.caption(f"Source: **{source}** · {len(dataset.records):,} records · "
-           f"{dataset.records['ship_name'].nunique()} ships · {dmin:%d %b %Y} – {dmax:%d %b %Y}")
-for w in warnings:
-    st.warning(w)
-if flash := st.session_state.pop("flash", None):
-    st.success(flash)
-
-tabs = st.tabs(["Fleet overview", "Ship comparison", "Ship drill-down", "Downtime & anomalies", "Data & simulation"])
-with tabs[0]:
-    V.fleet_overview(ctx)
-with tabs[1]:
-    V.ship_comparison(ctx)
-with tabs[2]:
-    V.ship_drilldown(ctx)
-with tabs[3]:
-    V.downtime_and_anomalies(ctx)
-with tabs[4]:
-    V.data_and_simulation(ctx, add_manual_record)
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Fleet overview", "Compare ships", "Ship details",
+                                        "Downtime & alerts", "Data"])
+with tab1:
+    views.fleet_overview(daily, events, alerts, period)
+with tab2:
+    views.compare_ships(daily, period)
+with tab3:
+    views.ship_details(daily, records, events, check, fuel_price)
+with tab4:
+    views.downtime_and_alerts(daily, records, events, alerts, fuel_price)
+with tab5:
+    views.data_tab(records)

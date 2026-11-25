@@ -1,0 +1,209 @@
+"""Mock data generator.
+
+How one simulated day is made:
+    load        = average load x season + random noise      (share of capacity)
+    production  = load x capacity x 24 h                    (MWh)
+    efficiency  = average efficiency + random noise         (MWh per tonne)
+    fuel        = production / efficiency                   (tonnes)
+
+Events change those days:
+    warning     the weeks before a breakdown: efficiency slowly drops (up to -9 %)
+    downtime    no production, only a little standby fuel (2-4 t/day)
+    restart     production climbs back to normal over a few days
+
+The original Excel rows are kept as they are; each ship is simulated from the
+day after its last real record.
+"""
+import math
+from dataclasses import dataclass
+from datetime import date, timedelta
+
+import numpy as np
+import pandas as pd
+
+from src.data import MAINTENANCE, NO_DATA, OPERATING, OUTAGE, RAMP_UP, REQUIRED_COLUMNS, prepare
+from src.fleet import NEW_SHIPS, ORIGINAL_SHIPS, Ship, get_ship
+
+SIMULATION_START = date(2024, 1, 1)
+
+
+@dataclass
+class Event:
+    """A period when a ship does not produce."""
+
+    ship: str
+    start: date
+    days: int = 45
+    kind: str = OUTAGE  # OUTAGE (breakdown) or MAINTENANCE (planned)
+    cause: str = "Main engine crankshaft bearing failure"
+    warning_days: int = 21  # only for breakdowns: efficiency drops before the failure
+    restart_days: int = 7
+
+    @property
+    def end(self) -> date:
+        return self.start + timedelta(days=self.days - 1)
+
+
+# The headline scenario: Rauf Bey breaks down for 45 days in July-August 2024.
+DEFAULT_EVENT = Event(ship="Rauf Bey", start=date(2024, 7, 1), days=45)
+
+
+@dataclass
+class Behaviour:
+    """How a ship normally runs."""
+
+    average_load: float = 0.60  # average output as a share of capacity
+    average_mwh_per_ton: float = 5.10
+    peak_month: int = 7  # month with the highest demand
+    seasonal_swing: float = 0.15  # demand is +-15 % around the average over the year
+    load_noise: float = 0.08
+    efficiency_noise: float = 0.02  # +-2 % day to day
+
+
+BEHAVIOUR = {
+    "Doğan Bey": Behaviour(peak_month=4),
+    "Kaya Bey": Behaviour(peak_month=8),
+    "Rauf Bey": Behaviour(peak_month=4),
+    "Selim Bey": Behaviour(average_load=0.72, average_mwh_per_ton=5.25, peak_month=4, seasonal_swing=0.10),
+    "Nilüfer Sultan": Behaviour(average_load=0.62, average_mwh_per_ton=5.05, peak_month=8, seasonal_swing=0.22),
+    "Kerem Bey": Behaviour(average_load=0.55, average_mwh_per_ton=4.60, peak_month=5, efficiency_noise=0.03),
+    "Deniz Sultan": Behaviour(average_load=0.68, average_mwh_per_ton=5.30, peak_month=5),
+}
+
+
+def learn_from_history(ship: Ship, history: pd.DataFrame, behaviour: Behaviour) -> Behaviour:
+    """Use the real records of a ship to set its average load and efficiency."""
+    real = history.dropna(subset=["production_mwh", "fuel_consumption_ton"])
+    if len(real) < 14:
+        return behaviour
+    efficiency = real["production_mwh"] / real["fuel_consumption_ton"]
+    return Behaviour(
+        average_load=round(real["production_mwh"].mean() / ship.max_mwh_per_day, 3),
+        average_mwh_per_ton=round(efficiency.median(), 3),
+        peak_month=behaviour.peak_month,
+        seasonal_swing=behaviour.seasonal_swing,
+        load_noise=behaviour.load_noise,
+        # The sample file is noisier than a real plant; cap it so alerts stay meaningful.
+        efficiency_noise=min(round(efficiency.std() / efficiency.mean(), 3), 0.03),
+    )
+
+
+def routine_maintenance(ship: str, start: date, end: date, rng, avoid: list[Event]) -> list[Event]:
+    """A 5-day planned maintenance roughly every 150 days (not near a big event)."""
+    events = []
+    day = start + timedelta(days=int(rng.integers(30, 150)))
+    while day <= end:
+        too_close = any(abs((day - e.start).days) < e.days + 45 for e in avoid)
+        if not too_close:
+            events.append(Event(ship, day, days=5, kind=MAINTENANCE, cause="Routine engine maintenance",
+                                warning_days=0, restart_days=2))
+        day += timedelta(days=int(rng.integers(130, 170)))
+    return events
+
+
+def simulate_ship(ship: Ship, behaviour: Behaviour, start: date, end: date,
+                  events: list[Event], rng, missing_reports: bool = True) -> pd.DataFrame:
+    """Simulate the daily records of one ship between start and end."""
+    if ship.first_day and ship.first_day > start:
+        start = ship.first_day
+    days = pd.date_range(start, end, freq="D")
+    n = len(days)
+    if n == 0:
+        return pd.DataFrame()
+
+    # 1. Normal operation
+    season = np.array([1 + behaviour.seasonal_swing * math.cos(2 * math.pi * (d.month - behaviour.peak_month) / 12)
+                       for d in days])
+    load = behaviour.average_load * season + rng.normal(0, behaviour.load_noise, n)
+    load = np.clip(load, 0.2, 0.95)
+    efficiency = behaviour.average_mwh_per_ton * (1 + rng.normal(0, behaviour.efficiency_noise, n))
+    status = [OPERATING] * n
+    note = [""] * n
+    standby_fuel = np.zeros(n)
+
+    def index_of(day):  # position of a date in the simulation, or None
+        i = (day - start).days
+        return i if 0 <= i < n else None
+
+    # 2. A new ship starts slowly
+    if ship.first_day == start:
+        for k in range(10):
+            load[k] *= (k + 1) / 11
+            status[k], note[k] = RAMP_UP, "Commissioning"
+
+    # 3. Events
+    for event in events:
+        label = "Outage" if event.kind == OUTAGE else "Maintenance"
+        for k in range(event.warning_days):  # efficiency slowly gets worse
+            i = index_of(event.start - timedelta(days=event.warning_days - k))
+            if i is not None:
+                efficiency[i] *= 1 - 0.09 * (k + 1) / event.warning_days
+        for k in range(event.days):  # ship is down
+            i = index_of(event.start + timedelta(days=k))
+            if i is not None:
+                load[i] = 0
+                standby_fuel[i] = rng.uniform(2, 4)
+                status[i] = event.kind
+                note[i] = f"{label}: {event.cause} (day {k + 1}/{event.days})"
+        for k in range(event.restart_days):  # production climbs back
+            i = index_of(event.end + timedelta(days=k + 1))
+            if i is not None:
+                load[i] *= (k + 1) / (event.restart_days + 1)
+                status[i], note[i] = RAMP_UP, f"Restart after {label.lower()}"
+
+    # 4. Production and fuel
+    production = load * ship.max_mwh_per_day
+    fuel = np.where(load > 0, production / efficiency, standby_fuel)
+
+    df = pd.DataFrame({
+        "ship_name": ship.name,
+        "date": days,
+        "production_mwh": production.round(1),
+        "fuel_consumption_ton": fuel.round(1),
+        "status": status,
+        "event_note": note,
+        "source": "simulated",
+    })
+
+    # 5. Some daily reports go missing (about 3 %), never during downtime
+    if missing_reports:
+        missing = (df["status"] == OPERATING) & (rng.random(n) < 0.03)
+        df.loc[missing, ["production_mwh", "fuel_consumption_ton"]] = None
+        df.loc[missing, "status"] = NO_DATA
+        df.loc[missing, "event_note"] = "Daily report missing"
+    return df
+
+
+def generate_fleet(base: pd.DataFrame | None, end: date, events: list[Event],
+                   new_ships: bool = True, seed: int = 42,
+                   maintenance: bool = True, missing_reports: bool = True) -> pd.DataFrame:
+    """Keep the real (base) records and simulate every ship up to ``end``.
+
+    Events that fall inside the real records are not applied.
+    """
+    if base is None:
+        base = prepare(pd.DataFrame(columns=REQUIRED_COLUMNS))
+
+    # Which ships: the ones in the real data (or the original three), plus the new ones.
+    ships = list(dict.fromkeys(base["ship_name"])) or [s.name for s in ORIGINAL_SHIPS]
+    if new_ships:
+        ships += [s.name for s in NEW_SHIPS if s.name not in ships]
+
+    frames = [base[base["date"] <= pd.Timestamp(end)]]
+    for i, name in enumerate(ships):
+        ship = get_ship(name)
+        behaviour = BEHAVIOUR.get(name, Behaviour())
+        history = base[base["ship_name"] == name]
+        start = SIMULATION_START
+        if not history.empty:  # continue after the last real record
+            behaviour = learn_from_history(ship, history, behaviour)
+            start = history["date"].max().date() + timedelta(days=1)
+
+        rng = np.random.default_rng(seed + i)  # same seed -> same data every time
+        ship_events = [e for e in events if e.ship == name]
+        if maintenance:
+            ship_events += routine_maintenance(name, start, end, rng, ship_events)
+        frames.append(simulate_ship(ship, behaviour, start, end, ship_events, rng, missing_reports))
+
+    frames = [f for f in frames if not f.empty]
+    return prepare(pd.concat(frames, ignore_index=True))
