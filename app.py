@@ -19,7 +19,7 @@ from src.data import MAINTENANCE, ORIGINAL_FILE, OUTAGE, load_file, one_row_per_
 from src.fleet import ALL_SHIPS
 from src.simulation import DEFAULT_EVENT, Event, generate_fleet
 
-st.set_page_config(page_title="Karpowership Fleet Dashboard", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Karpowership Fleet Dashboard", page_icon="", layout="wide")
 
 if "added_records" not in st.session_state:
     st.session_state.added_records = []  # records typed in on the Data tab
