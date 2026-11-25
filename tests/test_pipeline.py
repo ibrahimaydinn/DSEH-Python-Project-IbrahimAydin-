@@ -4,15 +4,15 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src import analytics
-from src.calculations import add_daily_metrics, add_period, summarize, summarize_by
-from src.data import NO_DATA, ORIGINAL_FILE, OUTAGE, RAMP_UP, load_file, one_row_per_day, prepare
-from src.simulation import DEFAULT_EVENT, generate_fleet
+from karpowership import alerts as analytics, analysis
+from karpowership.calculations import add_daily_metrics, summarize, summarize_by
+from karpowership.data import NO_DATA, ORIGINAL_FILE, OUTAGE, RAMP_UP, add_month, load_records, one_row_per_day, prepare
+from karpowership.simulation import DEFAULT_EVENT, generate_fleet
 
 
 @pytest.fixture(scope="module")
 def original():
-    return load_file(ORIGINAL_FILE)
+    return load_records(ORIGINAL_FILE)
 
 
 @pytest.fixture(scope="module")
@@ -75,9 +75,9 @@ def test_period_totals_use_total_divided_by_total():
 
 
 def test_outage_lowers_efficiency_and_availability(daily):
-    rauf = summarize_by(add_period(daily[daily["ship_name"] == "Rauf Bey"], "M"), ["period"]).set_index("period")
+    rauf = summarize_by(add_month(daily[daily["ship_name"] == "Rauf Bey"]), ["month"]).set_index("month")
     assert rauf.loc["2024-07-01", "mwh_per_ton"] == 0  # fuel burned, nothing produced
-    fleet = summarize_by(add_period(daily, "M"), ["period"]).set_index("period")
+    fleet = summarize_by(add_month(daily), ["month"]).set_index("month")
     assert fleet.loc["2024-07-01", "availability"] < fleet.loc["2024-06-01", "availability"] - 0.1
 
 
@@ -103,7 +103,7 @@ def test_data_checks_find_duplicates(simulated, daily):
 # ---------------------------------------------------------------- 2024 - 2026 dataset
 @pytest.fixture(scope="module")
 def full():
-    from src.simulation import build_dataset
+    from karpowership.simulation import build_dataset
     return build_dataset()
 
 
@@ -125,3 +125,27 @@ def test_nilufer_sultan_idle_in_2026(full):
     assert (idle["production_mwh"] == 0).all()
     assert idle["fuel_consumption_ton"].between(0.5, 1.0).all()  # only heating and maintenance on board
     assert ship.loc["2026-01-28", "production_mwh"] > 0 and ship.loc["2026-03-18", "production_mwh"] > 0
+
+
+def test_saved_dataset_matches_the_generator(full):
+    saved = load_records()  # data/powership_data.csv
+    assert len(saved) == len(full)
+    assert saved["production_mwh"].sum() == pytest.approx(full["production_mwh"].sum())
+
+
+# ---------------------------------------------------------------- statistics
+def test_efficiency_statistics(daily):
+    table = analysis.efficiency_statistics(daily)
+    assert set(table["ship_name"]) == set(daily["ship_name"])
+    assert (table["p10"] <= table["median"]).all() and (table["median"] <= table["p90"]).all()
+
+
+def test_drop_before_rauf_outage_is_significant(daily):
+    events = analytics.downtime_events(daily, 100)
+    test = analysis.before_downtime_test(daily, events)
+    rauf = test[test["ship_name"] == "Rauf Bey"].iloc[0]
+    assert rauf["change_pct"] < 0 and rauf["significant"]
+
+
+def test_seasonal_profile_has_twelve_months(daily):
+    assert len(analysis.seasonal_profile(daily)) == 12

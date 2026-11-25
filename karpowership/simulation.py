@@ -1,4 +1,8 @@
-"""Mock data generator.
+"""
+Mock data generator.
+
+Create the dataset used by the app (data/powership_data.csv) with:
+    python -m karpowership.simulation
 
 How one simulated day is made:
     load        = average load x season + random noise      (share of capacity)
@@ -25,8 +29,9 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from src.data import ORIGINAL_FILE, IDLE, MAINTENANCE, NO_DATA, OPERATING, OUTAGE, RAMP_UP, REQUIRED_COLUMNS, load_file, prepare
-from src.fleet import NEW_SHIPS, ORIGINAL_SHIPS, Ship, get_ship
+from karpowership.data import (IDLE, MAINTENANCE, NO_DATA, OPERATING, ORIGINAL_FILE, OUTAGE, RAMP_UP,
+                               REQUIRED_COLUMNS, load_records, prepare, save_records)
+from karpowership.fleet import NEW_SHIPS, ORIGINAL_SHIPS, Ship, get_ship
 
 SIMULATION_START = date(2024, 1, 1)
 LAST_DAY = date(2026, 11, 30)  # the dashboard covers 2024 to the end of November 2026
@@ -235,7 +240,13 @@ def generate_2025_2026(data_2024: pd.DataFrame, seed: int = 2025) -> pd.DataFram
 
 def build_dataset() -> pd.DataFrame:
     """The full dashboard data: 2024 (original + simulation) and 2025-2026."""
-    original = load_file(ORIGINAL_FILE)
+    original = load_records(ORIGINAL_FILE)
     data_2024 = generate_fleet(original, date(2024, 12, 31), [DEFAULT_EVENT])
     data = generate_2025_2026(data_2024)
     return data[data["date"].between(pd.Timestamp(SIMULATION_START), pd.Timestamp(LAST_DAY))]
+
+
+if __name__ == "__main__":
+    dataset = build_dataset()
+    save_records(dataset)
+    print(f"Saved {len(dataset)} records ({dataset['date'].min():%d %b %Y} - {dataset['date'].max():%d %b %Y})")

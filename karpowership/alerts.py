@@ -4,8 +4,8 @@ All functions take the daily table from ``calculations.add_daily_metrics``.
 """
 import pandas as pd
 
-from src.data import DOWN_STATUSES, OPERATING
-from src.fleet import get_ship
+from karpowership.data import DOWN_STATUSES, OPERATING
+from karpowership.fleet import get_ship
 
 DROP_THRESHOLD = 0.04  # alert when efficiency is 4 % below normal
 

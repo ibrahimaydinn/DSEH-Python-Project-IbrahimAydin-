@@ -3,8 +3,10 @@
 All ships burn heavy fuel oil (HFO), so "MWh per tonne of fuel" can be
 compared directly between ships.
 """
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
+
+import pandas as pd
 
 CO2_PER_TON_FUEL = 3.114  # tonnes of CO2 released per tonne of HFO burned
 
@@ -41,6 +43,34 @@ NEW_SHIPS = [
 ALL_SHIPS = {ship.name: ship for ship in ORIGINAL_SHIPS + NEW_SHIPS}
 
 
-def get_ship(name: str) -> Ship:
-    """Look up a ship. Unknown ships (e.g. added by hand) get default values."""
+def get_ship(name):
+    """
+    Look up a ship by name. Unknown ships (e.g. added by hand) get default values.
+
+    Parameters
+    ----------
+    name : str
+
+    Returns
+    -------
+    Ship
+    """
     return ALL_SHIPS.get(name, Ship(name, 25, "Unknown", 5.00))
+
+
+def ship_table(names):
+    """
+    The ship information as a table, one row per ship (used to merge with the records).
+
+    Parameters
+    ----------
+    names : list of str
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``ship_name``, ``capacity_mw``, ``site``, ``design_mwh_per_ton``.
+    """
+    rows = [asdict(get_ship(name)) for name in names]
+    table = pd.DataFrame(rows).rename(columns={"name": "ship_name"})
+    return table.drop(columns="first_day")
