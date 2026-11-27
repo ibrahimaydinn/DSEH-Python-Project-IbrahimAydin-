@@ -71,6 +71,8 @@ def ship_table(names):
     pandas.DataFrame
         Columns ``ship_name``, ``capacity_mw``, ``site``, ``design_mwh_per_ton``.
     """
+    # asdict turns each Ship object into a dictionary {"name": ..., "capacity_mw": ...};
+    # a list of dictionaries becomes a table with one row per ship.
     rows = [asdict(get_ship(name)) for name in names]
     table = pd.DataFrame(rows).rename(columns={"name": "ship_name"})
     return table.drop(columns="first_day")

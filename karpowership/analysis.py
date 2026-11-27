@@ -37,13 +37,15 @@ def efficiency_statistics(daily):
     """
     rows = []
     for ship, days in operating_days(daily).groupby("ship_name"):
-        values = days["mwh_per_ton"].to_numpy()
+        values = days["mwh_per_ton"].to_numpy()  # pandas column -> numpy array
+        # Percentiles: 10 % of the days are below p10, half below p50 (the median),
+        # 90 % below p90. Together they show the typical range of the ship.
         p10, p50, p90 = np.percentile(values, [10, 50, 90])
         rows.append({
             "ship_name": ship,
             "days": len(values),
             "mean": values.mean(),
-            "std": values.std(ddof=1),
+            "std": values.std(ddof=1),  # ddof=1: the usual "sample" standard deviation
             "p10": p10,
             "median": p50,
             "p90": p90,
@@ -66,7 +68,7 @@ def seasonal_profile(daily):
         Columns ``month_number``, ``month`` and ``capacity_factor``.
     """
     days = daily[daily["has_report"]].copy()
-    days["month_number"] = days["date"].dt.month
+    days["month_number"] = days["date"].dt.month  # 1 = January ... 12 = December, any year
     profile = days.groupby("month_number")[["production_mwh", "max_mwh"]].sum()
     profile["capacity_factor"] = profile["production_mwh"] / profile["max_mwh"]
     profile["month"] = [calendar.month_abbr[number] for number in profile.index]
@@ -91,6 +93,7 @@ def efficiency_trend(daily):
         One row per ship: ``change_per_year`` (MWh/t), ``r_squared``, ``p_value``.
     """
     days = operating_days(daily)
+    # Monthly efficiency per ship = total MWh / total fuel of each ship in each month.
     monthly = (days.assign(month=days["date"].dt.to_period("M").dt.start_time)
                .groupby(["ship_name", "month"])[["production_mwh", "fuel_consumption_ton"]].sum()
                .reset_index())
@@ -100,7 +103,12 @@ def efficiency_trend(daily):
     for ship, months in monthly.groupby("ship_name"):
         if len(months) < 6:
             continue
+        # x = time in years since the first month, y = efficiency.
         years = (months["month"] - months["month"].min()).dt.days / 365.25
+        # linregress finds the straight line y = slope * x + intercept that best fits
+        # the points. slope = change per year; rvalue**2 (R²) = how well the line
+        # fits (0 = not at all, 1 = perfectly); pvalue = chance of such a slope
+        # appearing if there were really no trend.
         fit = stats.linregress(years, months["mwh_per_ton"])
         rows.append({
             "ship_name": ship,
@@ -143,6 +151,10 @@ def before_downtime_test(daily, events, warning_days=21, normal_days=60):
         normal = ship[(ship["date"] >= normal_start) & (ship["date"] < warning_start)]["mwh_per_ton"]
         if len(warning) < 5 or len(normal) < 5:
             continue
+        # The t-test compares the averages of two groups of days. It answers:
+        # "if the ship were working as usual, how likely is a difference this big?"
+        # That probability is the p-value. equal_var=False = Welch's version,
+        # which does not assume both groups vary by the same amount.
         test = stats.ttest_ind(warning, normal, equal_var=False)
         rows.append({
             "ship_name": event["ship_name"],

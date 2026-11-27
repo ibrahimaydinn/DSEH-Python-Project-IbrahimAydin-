@@ -10,11 +10,16 @@ Run with:  streamlit run app.py
 
 import streamlit as st
 
+from pages.shared import selection_form
+
 st.set_page_config(page_title="Karpowership Fleet Dashboard", layout="wide")
 
 # Hide the buttons in the top-right corner (share, menu with record / print /
 # theme settings) and the download / fullscreen buttons on charts and tables.
-# The top bar itself stays, because it holds the button that re-opens the sidebar.
+# How it works: every part of a Streamlit page is an HTML element with a
+# "data-testid" name. This small piece of CSS tells the browser not to display
+# the elements with these names. The top bar itself stays, because it holds the
+# button that re-opens the sidebar.
 st.markdown("""
 <style>
 [data-testid="stToolbarActions"], [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
@@ -23,6 +28,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# The list of pages. st.navigation draws the page menu in the sidebar and
+# returns the page the user is looking at; page.run() draws that page.
 pages = [
     st.Page("pages/overview.py", title="Fleet overview", default=True),
     st.Page("pages/ships.py", title="Ships"),
@@ -33,10 +40,10 @@ pages = [
 page = st.navigation(pages)
 
 # The selection form is shown under the page list on every page.
-from pages.shared import selection_form  # noqa: E402  (needs st.set_page_config first)
-
 selection_form()
 
+# "selection" is only saved in session_state after the first click on
+# "Show selected data" (see pages/shared.py). Until then, show only a short message.
 if st.session_state.get("selection") is None:
     st.title("Fleet operations dashboard")
     st.write("Choose the ships, dates and prices in the sidebar, then click **Show selected data**.")

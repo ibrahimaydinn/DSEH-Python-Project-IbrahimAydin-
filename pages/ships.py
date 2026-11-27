@@ -33,6 +33,7 @@ st.dataframe(
     },
 )
 
+# Each option of the radio button points to (column to plot, how to write the numbers).
 charts = {
     "Efficiency (MWh per tonne)": ("mwh_per_ton", "{:.2f}"),
     "Capacity factor": ("capacity_factor", "{:.1%}"),
@@ -46,6 +47,7 @@ show(plots.ship_bars(table, column, choice, number_format))
 # --- One ship ---------------------------------------------------------------------
 st.header("One ship in detail")
 ships = sorted(daily["ship_name"].unique())
+# Start on Rauf Bey if it is selected, otherwise on the first ship of the list.
 ship = st.selectbox("Ship", ships, index=ships.index("Rauf Bey") if "Rauf Bey" in ships else 0)
 info = get_ship(ship)
 st.caption(f"{info.site} · {info.capacity_mw:.0f} MW · design efficiency {info.design_mwh_per_ton} MWh/t")

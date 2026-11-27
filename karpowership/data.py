@@ -53,7 +53,8 @@ def prepare(df, source="original"):
         raise ValueError(f"Missing columns: {missing}")
 
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()  # text -> real dates, time set to 00:00
+    # errors="coerce": anything that is not a number becomes NaN (empty) instead of an error.
     df["production_mwh"] = pd.to_numeric(df["production_mwh"], errors="coerce")
     df["fuel_consumption_ton"] = pd.to_numeric(df["fuel_consumption_ton"], errors="coerce")
 
@@ -61,6 +62,8 @@ def prepare(df, source="original"):
         df["status"] = OPERATING
     df["status"] = df["status"].fillna(OPERATING)
     has_values = df["production_mwh"].notna() & df["fuel_consumption_ton"].notna()
+    # df.loc[rows, column] = value changes only the chosen rows; ~ means "not",
+    # so rows WITHOUT values get the status "no_data".
     df.loc[~has_values, "status"] = NO_DATA
 
     if "event_note" not in df.columns:
@@ -118,12 +121,18 @@ def one_row_per_day(records):
     pandas.DataFrame
         One row per ship and day, with an extra ``n_records`` column.
     """
+    # If a day has several records, its status is the most important one:
+    # first look for "outage", then "idle", and so on.
     def pick_status(statuses):
         for status in [OUTAGE, IDLE, MAINTENANCE, RAMP_UP, OPERATING]:
             if status in statuses.values:
                 return status
         return NO_DATA
 
+    # groupby puts together the rows with the same ship and date; agg says how to
+    # combine each column: new_column=(column, function).
+    # sum(min_count=1) adds the values but stays empty if all of them are empty
+    # (a plain sum would turn "no data" into 0, which would look like a real zero).
     return records.groupby(["ship_name", "date"], as_index=False).agg(
         production_mwh=("production_mwh", lambda s: s.sum(min_count=1)),
         fuel_consumption_ton=("fuel_consumption_ton", lambda s: s.sum(min_count=1)),
@@ -146,6 +155,8 @@ def add_month(df):
     -------
     pandas.DataFrame
     """
+    # to_period("M") turns 2024-07-15 into "2024-07"; start_time turns it back
+    # into a date: 2024-07-01. All days of a month then share the same value.
     return df.assign(month=df["date"].dt.to_period("M").dt.start_time)
 
 
@@ -165,4 +176,6 @@ def monthly_table(monthly, value):
     pandas.DataFrame
         One row per ship, one column per month.
     """
+    # pivot_table: the ship names become the rows, the months become the columns
+    # and each cell holds the value for that ship and month (long -> wide table).
     return monthly.pivot_table(index="ship_name", columns="month", values=value)

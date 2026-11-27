@@ -8,6 +8,8 @@ from karpowership import analysis, plots
 from pages.shared import selected_data, show
 
 st.title("Statistics")
+
+# Each section below calls one function of karpowership/analysis.py and shows the result.
 data = selected_data()
 daily, events = data["daily"], data["events"]
 
@@ -22,7 +24,7 @@ show(plots.efficiency_boxplot(daily))
 
 st.header("Is there a seasonal pattern?")
 show(plots.seasonal_line(analysis.seasonal_profile(daily)))
-st.caption("Demand (and so the capacity factor) is higher in late spring and summer.")
+st.caption("Average capacity factor of the selected ships in each calendar month.")
 
 st.header("Is efficiency changing over time?")
 st.write("A straight line fitted through each ship's monthly efficiency (linear regression). "
@@ -36,7 +38,7 @@ st.dataframe(analysis.efficiency_trend(daily), hide_index=True, column_config={
 
 st.header("Was there a warning before each long downtime?")
 st.write("Efficiency in the 3 weeks before the downtime compared with the 2 months before that (t-test). "
-         "*Significant* means the drop is real, not chance: the ship gave a warning sign.")
+         "*Significant* (p-value below 0.05) means the difference is unlikely to be chance.")
 test = analysis.before_downtime_test(daily, events)
 if test.empty:
     st.write("No long downtime in the selected period.")

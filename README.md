@@ -14,7 +14,7 @@ Choose the ships, the dates and the prices in the sidebar, then click
 
 | Page | What you can see |
 |------|------------------|
-| **Fleet overview** (`pages/overview.py`) | A box for every long downtime, eight key numbers, the energy produced each month, the fleet availability and a ship-by-month availability heatmap. |
+| **Fleet overview** (`pages/overview.py`) | Eight key numbers, the energy produced each month, the fleet availability and a ship-by-month availability heatmap. |
 | **Ships** (`pages/ships.py`) | A table comparing the ships, a ranking chart, and one ship in detail: daily production and efficiency compared with its normal level. |
 | **Statistics** (`pages/statistics.py`) | Efficiency statistics per ship, the seasonal pattern, efficiency trends (linear regression) and a t-test on the efficiency before each long downtime. |
 | **Downtime and alerts** (`pages/downtime.py`) | Every downtime period with the energy and revenue lost, the efficiency alerts, the fuel-savings potential and data-quality checks. |

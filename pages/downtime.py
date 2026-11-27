@@ -10,7 +10,7 @@ from pages.shared import DATE_COLUMNS, selected_data, show
 st.title("Downtime and alerts")
 data = selected_data()
 daily, events, alert_periods = data["daily"], data["events"], data["alerts"]
-fuel_price = data["prices"][0]
+fuel_price = data["prices"][0]  # "prices" is a pair (fuel price, electricity price); [0] is the fuel price
 
 st.header("Downtime periods")
 columns = st.columns(3)

@@ -39,6 +39,8 @@ LAST_DAY = date(2026, 11, 30)  # the dashboard covers 2024 to the end of Novembe
 LABELS = {OUTAGE: "Outage", MAINTENANCE: "Maintenance", IDLE: "Idle"}
 
 
+# @dataclass writes the boring parts of a class for us (the __init__ that stores
+# each field), so a class can be just a list of named fields with default values.
 @dataclass
 class Event:
     """A period when a ship does not produce."""
@@ -52,8 +54,9 @@ class Event:
     restart_days: int = 7
     standby_fuel: tuple = (2.0, 4.0)  # fuel burned per day while down (min, max tonnes)
 
-    @property
+    @property  # lets us write event.end (no brackets), like a normal field
     def end(self) -> date:
+        """Last day of the event: a 45-day event starting on 1 July ends on 14 August."""
         return self.start + timedelta(days=self.days - 1)
 
 
@@ -92,6 +95,7 @@ BEHAVIOUR = {
 
 def learn_from_history(ship: Ship, history: pd.DataFrame, behaviour: Behaviour) -> Behaviour:
     """Use the real records of a ship to set its average load and efficiency."""
+    # Only normal days with both numbers present.
     real = history[history["status"] == OPERATING].dropna(subset=["production_mwh", "fuel_consumption_ton"])
     if len(real) < 14:
         return behaviour
@@ -110,8 +114,11 @@ def learn_from_history(ship: Ship, history: pd.DataFrame, behaviour: Behaviour) 
 def routine_maintenance(ship: str, start: date, end: date, rng, avoid: list[Event]) -> list[Event]:
     """A 5-day planned maintenance roughly every 150 days (not near a big event)."""
     events = []
+    # rng.integers(30, 150) picks a random whole number from 30 to 149:
+    # the first maintenance happens a random number of days after the start.
     day = start + timedelta(days=int(rng.integers(30, 150)))
     while day <= end:
+        # Skip this maintenance if it falls close to one of the big events.
         too_close = any(abs((day - e.start).days) < e.days + 45 for e in avoid)
         if not too_close:
             events.append(Event(ship, day, days=5, kind=MAINTENANCE, cause="Routine engine maintenance",
@@ -131,16 +138,23 @@ def simulate_ship(ship: Ship, behaviour: Behaviour, start: date, end: date,
         return pd.DataFrame()
 
     # 1. Normal operation
+    # Seasonal demand with a cosine wave: cos(0) = 1, so in the peak month the
+    # factor is 1 + swing (e.g. 1.15 = 15 % above average); six months later the
+    # cosine is -1, so the factor is 1 - swing (15 % below average).
     season = np.array([1 + behaviour.seasonal_swing * math.cos(2 * math.pi * (d.month - behaviour.peak_month) / 12)
                        for d in days])
+    # rng.normal(0, x, n) gives n random numbers around 0 (standard deviation x):
+    # the small day-to-day ups and downs of real data.
     load = behaviour.average_load * season + rng.normal(0, behaviour.load_noise, n)
-    load = np.clip(load, 0.2, 0.95)
+    load = np.clip(load, 0.2, 0.95)  # keep the load between 20 % and 95 % of capacity
     efficiency = behaviour.average_mwh_per_ton * (1 + rng.normal(0, behaviour.efficiency_noise, n))
     status = [OPERATING] * n
     note = [""] * n
     standby_fuel = np.zeros(n)
 
-    def index_of(day):  # position of a date in the simulation, or None
+    # The arrays above have one position per day (0 = first day). This small helper
+    # turns a date into its position, or None if the date is outside the simulation.
+    def index_of(day):
         i = (day - start).days
         return i if 0 <= i < n else None
 
@@ -153,14 +167,18 @@ def simulate_ship(ship: Ship, behaviour: Behaviour, start: date, end: date,
     # 3. Events
     for event in events:
         label = LABELS[event.kind]
-        for k in range(event.warning_days):  # efficiency slowly gets worse
+        for k in range(event.warning_days):  # efficiency slowly gets worse before a breakdown
             i = index_of(event.start - timedelta(days=event.warning_days - k))
             if i is not None:
+                # (k + 1) / warning_days grows from almost 0 to 1, so the loss grows
+                # step by step until it reaches 9 % on the day before the failure.
                 efficiency[i] *= 1 - 0.09 * (k + 1) / event.warning_days
         for k in range(event.days):  # ship is down
             i = index_of(event.start + timedelta(days=k))
             if i is not None:
                 load[i] = 0
+                # rng.uniform(a, b) = a random number between a and b
+                # (the * unpacks the pair (2.0, 4.0) into the two arguments).
                 standby_fuel[i] = rng.uniform(*event.standby_fuel)
                 status[i] = event.kind
                 note[i] = f"{label}: {event.cause} (day {k + 1}/{event.days})"
@@ -172,6 +190,8 @@ def simulate_ship(ship: Ship, behaviour: Behaviour, start: date, end: date,
 
     # 4. Production and fuel
     production = load * ship.max_mwh_per_day
+    # np.where(condition, a, b) picks a where the condition is True, otherwise b:
+    # producing days burn production / efficiency, down days only the standby fuel.
     fuel = np.where(load > 0, production / efficiency, standby_fuel)
 
     df = pd.DataFrame({
@@ -186,6 +206,7 @@ def simulate_ship(ship: Ship, behaviour: Behaviour, start: date, end: date,
 
     # 5. Some daily reports go missing (about 3 %), never during downtime
     if missing_reports:
+        # rng.random(n) gives n numbers between 0 and 1; about 3 % of them are below 0.03.
         missing = (df["status"] == OPERATING) & (rng.random(n) < 0.03)
         df.loc[missing, ["production_mwh", "fuel_consumption_ton"]] = None
         df.loc[missing, "status"] = NO_DATA
@@ -204,6 +225,7 @@ def generate_fleet(base: pd.DataFrame | None, end: date, events: list[Event],
         base = prepare(pd.DataFrame(columns=REQUIRED_COLUMNS))
 
     # Which ships: the ones in the real data (or the original three), plus the new ones.
+    # dict.fromkeys(...) removes duplicate names but keeps their order.
     ships = list(dict.fromkeys(base["ship_name"])) or [s.name for s in ORIGINAL_SHIPS]
     if new_ships:
         ships += [s.name for s in NEW_SHIPS if s.name not in ships]
@@ -218,14 +240,16 @@ def generate_fleet(base: pd.DataFrame | None, end: date, events: list[Event],
             behaviour = learn_from_history(ship, history, behaviour)
             start = history["date"].max().date() + timedelta(days=1)
 
-        rng = np.random.default_rng(seed + i)  # same seed -> same data every time
+        # A random number generator. Starting it from a fixed "seed" makes the random
+        # numbers the same every time, so the dataset can be re-created exactly.
+        rng = np.random.default_rng(seed + i)
         ship_events = [e for e in events if e.ship == name]
         if maintenance:
             ship_events += routine_maintenance(name, start, end, rng, ship_events)
         frames.append(simulate_ship(ship, behaviour, start, end, ship_events, rng, missing_reports))
 
     frames = [f for f in frames if not f.empty]
-    return prepare(pd.concat(frames, ignore_index=True))
+    return prepare(pd.concat(frames, ignore_index=True))  # stack all the tables into one
 
 
 def generate_2025_2026(data_2024: pd.DataFrame, seed: int = 2025) -> pd.DataFrame:
@@ -246,6 +270,8 @@ def build_dataset() -> pd.DataFrame:
     return data[data["date"].between(pd.Timestamp(SIMULATION_START), pd.Timestamp(LAST_DAY))]
 
 
+# This part only runs when the file is started directly (python -m karpowership.simulation),
+# not when another file imports it.
 if __name__ == "__main__":
     dataset = build_dataset()
     save_records(dataset)

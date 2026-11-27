@@ -22,6 +22,8 @@ with st.form("add_record", clear_on_submit=True):
     status = st.selectbox("Status", [OPERATING, "ramp_up", "maintenance", "outage", "idle"])
     note = st.text_input("Note")
     if st.form_submit_button("Add"):
+        # Save the new record in session_state (see pages/shared.py), then re-run the
+        # app with st.rerun() so that every table and chart includes it.
         st.session_state.added_records.append({
             "ship_name": ship.strip(), "date": pd.Timestamp(day), "production_mwh": mwh,
             "fuel_consumption_ton": fuel, "status": status, "event_note": note, "source": "manual",
@@ -29,6 +31,7 @@ with st.form("add_record", clear_on_submit=True):
         st.rerun()
 
 st.header("Download")
+# .dt.date drops the time part, so the CSV shows 2024-01-01 instead of 2024-01-01 00:00:00.
 csv = records.assign(date=records["date"].dt.date).to_csv(index=False)
 st.download_button("Download all records (CSV)", csv, "powership_data.csv")
 

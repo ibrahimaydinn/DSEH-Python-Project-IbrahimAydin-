@@ -40,10 +40,13 @@ def add_daily_metrics(daily, fuel_price=450.0, electricity_price=100.0):
     pandas.DataFrame
         The same rows with the ship information and the metric columns added.
     """
+    # merge = join two tables on a shared column (like VLOOKUP in Excel): every day
+    # gets the capacity and site of its ship. how="left" keeps all the daily rows.
     df = daily.merge(ship_table(daily["ship_name"].unique()), on="ship_name", how="left")
     df["max_mwh"] = df["capacity_mw"] * 24
 
     # No output means no daily efficiency (instead of 0 or a division error).
+    # np.where(condition, a, b) takes a where the condition is True, otherwise b (NaN = empty).
     df["mwh_per_ton"] = np.where(df["production_mwh"] > 0,
                                  df["production_mwh"] / df["fuel_consumption_ton"], np.nan)
     df["capacity_factor"] = df["production_mwh"] / df["max_mwh"]
@@ -53,6 +56,8 @@ def add_daily_metrics(daily, fuel_price=450.0, electricity_price=100.0):
     df["profit"] = df["revenue"] - df["fuel_cost"]
     df["co2_t"] = df["fuel_consumption_ton"] * CO2_PER_TON_FUEL
 
+    # True / False columns: isin checks whether the status is one of the listed values.
+    # Summing a True/False column counts the True values (True = 1, False = 0).
     df["is_down"] = df["status"].isin(DOWN_STATUSES)
     df["is_available"] = df["status"].isin([OPERATING, RAMP_UP])
     df["has_report"] = df["status"] != NO_DATA
@@ -77,7 +82,7 @@ def summarize(df):
     max_mwh = df.loc[df["has_report"], "max_mwh"].sum()  # missing reports don't count
     revenue = df["revenue"].sum()
 
-    def ratio(a, b):
+    def ratio(a, b):  # a / b, but empty (NaN) instead of an error when b is 0
         return a / b if b else np.nan
 
     summary = {
@@ -110,5 +115,7 @@ def summarize_by(df, columns):
     pandas.DataFrame
         One row per group.
     """
+    # For each group (e.g. each ship), run summarize on its rows. pd.Series turns
+    # the returned dictionary into one row; the groups are then stacked into a table.
     table = df.groupby(columns).apply(lambda group: pd.Series(summarize(group)), include_groups=False)
     return table.reset_index()

@@ -15,6 +15,7 @@ MAIN_COLOR = "#1f3b57"
 GREY = "#9a9a9a"
 EVENT_COLORS = {"Outage": "#d93b3b", "Maintenance": "#2f6fce", "Idle": "#e8a33d"}
 
+# Default settings for every chart: font sizes, bold titles, no top/right border.
 plt.rcParams.update({"font.size": 10, "axes.titlesize": 13, "axes.titleweight": "bold",
                      "axes.spines.top": False, "axes.spines.right": False})
 
@@ -34,16 +35,19 @@ def new_chart(title, ylabel="", height=3.6):
     -------
     (matplotlib.figure.Figure, matplotlib.axes.Axes)
     """
+    # fig = the whole picture, ax = the drawing area inside it (axes, lines, bars).
     fig, ax = plt.subplots(figsize=(10, height))
     ax.set_title(title, loc="left")
     ax.set_ylabel(ylabel)
     ax.grid(axis="y", color="#e5e5e5")
-    ax.set_axisbelow(True)
+    ax.set_axisbelow(True)  # draw the grid lines behind the bars, not on top
     return fig, ax
 
 
 def readable_dates(ax):
     """Short date labels on the x axis (e.g. 2025, Apr, Jul)."""
+    # The locator chooses where the date ticks go; the formatter writes them
+    # short (only the year when it changes, otherwise the month).
     locator = mdates.AutoDateLocator()
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
@@ -54,6 +58,8 @@ def shade_downtime(ax, events, min_days=1):
     shown = set()
     for _, event in events[events["days"] >= min_days].iterrows():
         color = EVENT_COLORS.get(event["type"], GREY)
+        # axvspan colours a vertical band from the start date to the end date;
+        # alpha=0.18 makes it light and see-through.
         ax.axvspan(event["start"], event["end"], color=color, alpha=0.18, linewidth=0)
         shown.add(event["type"])
     if shown:
@@ -112,9 +118,12 @@ def availability_heatmap(wide):
     """
     fig, ax = new_chart("Availability per ship and month", height=0.45 * len(wide) + 1.4)
     ax.grid(False)
+    # imshow draws a grid of numbers as coloured squares. "Greys_r" = white for
+    # high values (100 % available), black for low ones (0 %).
     image = ax.imshow(wide.to_numpy(), aspect="auto", cmap="Greys_r", vmin=0, vmax=1)
     ax.set_yticks(range(len(wide)), wide.index)
     months = list(wide.columns)
+    # Label only January and July of each year, so the labels do not overlap.
     ticks = [i for i, month in enumerate(months) if month.month in (1, 7)]
     ax.set_xticks(ticks, [months[i].strftime("%b %Y") for i in ticks])
     fig.colorbar(image, ax=ax, format=PercentFormatter(1.0), fraction=0.03)
@@ -137,6 +146,7 @@ def ship_bars(table, column, title, number_format="{:,.0f}"):
     fig, ax = new_chart(title, height=0.4 * len(table) + 1.2)
     ax.grid(False)
     bars = ax.barh(table["ship_name"], table[column], color=MAIN_COLOR)
+    # Write the value at the end of each bar, e.g. "{:.1%}".format(0.591) -> "59.1%".
     ax.bar_label(bars, labels=[number_format.format(v) for v in table[column]], padding=4)
     ax.set_xticks([])
     ax.spines["bottom"].set_visible(False)
@@ -152,6 +162,8 @@ def efficiency_boxplot(daily):
     days = daily[(daily["status"] == "operating") & daily["mwh_per_ton"].notna()]
     ships = sorted(days["ship_name"].unique())
     fig, ax = new_chart("Daily efficiency per ship", "MWh per tonne")
+    # One box per ship: the list holds the daily efficiencies of each ship.
+    # showfliers=False hides the single extreme days, to keep the chart clean.
     ax.boxplot([days.loc[days["ship_name"] == ship, "mwh_per_ton"] for ship in ships],
                tick_labels=ships, showfliers=False,
                medianprops={"color": MAIN_COLOR, "linewidth": 2})
@@ -169,6 +181,7 @@ def seasonal_line(profile):
 def daily_production(ship_days, events):
     """Daily production of one ship, with its downtime periods shaded."""
     fig, ax = new_chart("Daily production", "MWh")
+    # fill_between colours the area under the line (missing days count as 0).
     ax.fill_between(ship_days["date"], ship_days["production_mwh"].fillna(0), color=MAIN_COLOR, linewidth=0)
     shade_downtime(ax, events)
     readable_dates(ax)
@@ -190,13 +203,15 @@ def efficiency_vs_normal(check, events):
         Downtime periods of the same ship.
     """
     # One row per calendar day, so the lines break during downtime instead of jumping across it.
+    # asfreq("D") adds the missing calendar days as empty rows; matplotlib does not
+    # draw a line through empty values, so the line has a gap during downtime.
     check = check.set_index("date").asfreq("D").reset_index()
 
     fig, ax = new_chart("Efficiency compared with normal", "MWh per tonne")
     ax.scatter(check["date"], check["mwh_per_ton"], s=6, color=GREY, alpha=0.5)
     ax.plot(check["date"], check["normal"], color="#333333", linestyle="--", linewidth=1)
     ax.plot(check["date"], check["recent"], color=MAIN_COLOR, linewidth=1.5)
-    alert_days = check[check["alert"].eq(True)]
+    alert_days = check[check["alert"].eq(True)]  # .eq(True) also handles the empty rows added above
     ax.scatter(alert_days["date"], alert_days["recent"], marker="v", s=30, color="#d93b3b", zorder=3)
     shade_downtime(ax, events)
     readable_dates(ax)
